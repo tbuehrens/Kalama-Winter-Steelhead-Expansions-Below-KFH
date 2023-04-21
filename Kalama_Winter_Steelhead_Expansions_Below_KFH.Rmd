@@ -1,0 +1,116 @@
+---
+title: "Kalama Winter Steelhead Expansion Below KFH"
+author: "Thomas Buehrens & Jeremy Wilson"
+date: "2023-04-21"
+output: html_document
+---
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"https://privatelands.wdfw.wa.gov/wdfwlogo_clrnotxt.png"\" style=\"float: right;width: 150px;\"/>')
+   });
+</script>
+
+***
+
+Last Updated `r format(Sys.time(), '%m/%d/%Y')`.
+
+***
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#function to install or load packages
+install_or_load_pack <- function(pack){
+  create.pkg <- pack[!(pack %in% installed.packages()[, "Package"])]
+  if (length(create.pkg))
+    install.packages(create.pkg, dependencies = TRUE,repos = "http://cran.us.r-project.org")
+  sapply(pack, require, character.only = TRUE)
+}
+
+install_or_load_pack(c(
+  "tidyverse","ggplot2","MARSS","reshape2","gridExtra"
+))
+```
+
+```{r  message = FALSE, warning = FALSE,results = "hide"}
+dat<-read_csv("Kalama_Winter_Steelhead_Expansions_Below_KFH.csv")%>%
+  dplyr::select(-TSA_abv_KFH)#%>%
+  #filter(Year>1999)#%>%
+  #mutate(TSA_redd_blw_KFH=ifelse(Year==2019,NA,TSA_redd_blw_KFH))
+
+marss_mat<-dat%>%
+  dplyr::select(-Year)%>%
+  mutate(across(everything(),~log(.)))%>%
+  as.matrix()%>%
+  t()
+
+
+ Q= "equalvarcov"#"unconstrained",
+ R= matrix(list(0),2,2) #"diagonal and unequal" #,diag(rep(0,nrow(marss_mat))),#"diagonal and equal","diagonal and unequal",
+ diag(R) <- c(0.05, "r1")
+ R[1, 1] <- as.numeric(R[1, 1])
+ U= matrix(rep(0,nrow(marss_mat)),nrow=nrow(marss_mat),1)
+
+#model$R[2,2]<-"r1"
+model=list(
+  Q=Q,
+  R=R,
+  U=U
+)
+
+fit=MARSS(marss_mat, model=model,control=list(maxit=2000,allow.degen=T))
+
+fitted<-t(fit$states)
+fitted<-melt(fitted)
+fitted$type="mle"
+fitted_se<-t(fit$states.se)
+fitted_se<-melt(fitted_se)
+fitted_se$type="se"
+
+fitted<-fitted%>%
+  as_tibble()%>%
+  bind_rows(fitted_se)%>%
+  mutate(year=Var1+min(dat$Year)-1,
+         method=ifelse(grepl("TSA_abv_KFH",Var2),"TSA_abv_KFH",ifelse(grepl("TSA_redd_blw_KFH",Var2),"TSA_redd_blw_KFH","NOSA_abv_KFH"))
+         )%>%
+  dplyr::select(type,year,method,value)%>%
+  group_by(year,method)%>%
+  pivot_wider(values_from = value,names_from = type)
+  
+
+
+results<-dat%>%
+  pivot_longer(-Year,names_to = "method")%>%
+  dplyr::rename(obs=value,year=Year)%>%
+  right_join(fitted)%>%
+  mutate(L95=mle-1.96*se,U95=mle+1.96*se,
+         across(c("mle","L95","U95"),~exp(.))
+         )
+
+
+p1<-ggplot(results,aes(x=year,y=obs))+
+  geom_ribbon(mapping=aes(ymin=L95,ymax=U95),alpha=0.5)+
+  geom_line(mapping=aes(y=mle))+
+  geom_point()+
+  facet_wrap(~method,scales="free_y")+
+  ylim(0,NA)
+
+results2<-results%>%
+  dplyr::select(year,method,mle,obs)%>%
+  pivot_wider(names_from = method,values_from = c("mle","obs"))%>%
+  mutate(p_lower_state=mle_TSA_redd_blw_KFH/(mle_NOSA_abv_KFH+mle_TSA_redd_blw_KFH),
+         p_lower_state_obs=mle_TSA_redd_blw_KFH/(obs_NOSA_abv_KFH+mle_TSA_redd_blw_KFH)
+         )
+p2<-ggplot(results2,aes(x=year,y=p_lower_state))+
+  geom_line()+
+  geom_line(mapping=aes(y=p_lower_state_obs),color="blue")+
+  geom_point()+
+  ylim(0,NA)
+
+grid.arrange(p1,p2,ncol=1)
+  
+
+write.csv(results%>%filter(method=="TSA_redd_blw_KFH")%>%dplyr::select(-se),"Results_Kalama_Winter_Steelhead_Expansions_Below_KFH.csv",row.names = F)
+```
